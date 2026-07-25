@@ -106,7 +106,7 @@ function createAppDialogShell(title) {
   dialog.innerHTML = `<div class="${CSS_PREFIX}app-dialog-header ${CSS_PREFIX}loading-dialog-title">${escapeHtml(title)}</div>`;
 
   overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
+  DIALOG_CONTAINER.appendChild(overlay);
   return { overlay, dialog };
 }
 
@@ -563,7 +563,7 @@ async function runQuery() {
     setStatus("Query failed");
   } finally {
     setBusy(false);
-    if (options.autoCascade) announceFirstQueryRan();
+    if (options.autoExecute) announceAutoExecuteReady();
   }
 }
 
@@ -582,9 +582,16 @@ async function main() {
       loadResultFromBlog(resultLabel);
     }
     if (options.datasetLabel) {
-      await userRunQuery();
-    } else if (options.autoCascade) {
-      firstQueryRan.then(() => {
+      // Load the shared dataset eagerly on boot, whether or not this panel's
+      // own query auto-executes - other panels on the page need it either way.
+      const booted = ensureDeferredDbBooted();
+      booted.then(() => announceAutoExecuteReady());
+      if (options.autoExecute) {
+        await booted;
+        if (!hasRunOnce) await userRunQuery();
+      }
+    } else if (options.autoExecute) {
+      autoExecuteReady.then(() => {
         if (!hasRunOnce) userRunQuery();
       });
     }

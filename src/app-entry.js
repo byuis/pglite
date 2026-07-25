@@ -302,6 +302,8 @@ const splashEl = {
 const HAS_SAVED_QUERIES = true;
 const THEME_ATTR = "data-theme";
 const CSS_PREFIX = "";
+/** Styled confirm/prompt dialogs mount here; the single-instance app has no per-widget box to scope to, so the whole page is fair game (see embed.js for the per-instance version). */
+const DIALOG_CONTAINER = document.body;
 /** Per-instance seed/boot options; always empty for the single-instance app (embed.js's studios pass real values here). */
 const options = {};
 /** JSONP callback names; a plain literal is fine here since app.js only ever has one instance (see embed.js for the per-instance-namespaced version). */

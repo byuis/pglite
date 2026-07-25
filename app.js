@@ -306,6 +306,8 @@ const splashEl = {
 const HAS_SAVED_QUERIES = true;
 const THEME_ATTR = "data-theme";
 const CSS_PREFIX = "";
+/** Styled confirm/prompt dialogs mount here; the single-instance app has no per-widget box to scope to, so the whole page is fair game (see embed.js for the per-instance version). */
+const DIALOG_CONTAINER = document.body;
 /** Per-instance seed/boot options; always empty for the single-instance app (embed.js's studios pass real values here). */
 const options = {};
 /** JSONP callback names; a plain literal is fine here since app.js only ever has one instance (see embed.js for the per-instance-namespaced version). */
@@ -433,7 +435,7 @@ function createAppDialogShell(title) {
   dialog.innerHTML = `<div class="${CSS_PREFIX}app-dialog-header ${CSS_PREFIX}loading-dialog-title">${escapeHtml(title)}</div>`;
 
   overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
+  DIALOG_CONTAINER.appendChild(overlay);
   return { overlay, dialog };
 }
 
@@ -890,7 +892,7 @@ async function runQuery() {
     setStatus("Query failed");
   } finally {
     setBusy(false);
-    if (options.autoCascade) announceFirstQueryRan();
+    if (options.autoExecute) announceAutoExecuteReady();
   }
 }
 
@@ -909,9 +911,16 @@ async function main() {
       loadResultFromBlog(resultLabel);
     }
     if (options.datasetLabel) {
-      await userRunQuery();
-    } else if (options.autoCascade) {
-      firstQueryRan.then(() => {
+      // Load the shared dataset eagerly on boot, whether or not this panel's
+      // own query auto-executes - other panels on the page need it either way.
+      const booted = ensureDeferredDbBooted();
+      booted.then(() => announceAutoExecuteReady());
+      if (options.autoExecute) {
+        await booted;
+        if (!hasRunOnce) await userRunQuery();
+      }
+    } else if (options.autoExecute) {
+      autoExecuteReady.then(() => {
         if (!hasRunOnce) userRunQuery();
       });
     }

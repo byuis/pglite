@@ -26,17 +26,23 @@ const SHARED_DB_PARAM = "shared";
 let useSharedDb = new URLSearchParams(window.location.search).get(SHARED_DB_PARAM) === "1";
 
 /**
- * Resolves once any code-block-derived query-studio instance (see
- * convertWebsqlCodeBlocks / options.autoCascade) has run a query for the
- * first time - whether that was its own options.datasetLabel auto-run or a
- * reader's manual Run click. Every other such instance on the page awaits
- * this in its own main() and then auto-runs its own query too, so once
- * whichever panel loads the shared dataset finishes, a reader doesn't have
- * to click Run in every remaining panel by hand.
+ * Resolves once this page's shared dataset (if any `pre.websql` block names
+ * one via a `data-<label>` class) has finished loading, or - on a page with
+ * no such block - once any `execute`-tagged query-studio instance (see
+ * convertWebsqlCodeBlocks / options.autoExecute) has run a query, whether
+ * that was its own immediate auto-run (see main()) or a reader's manual Run
+ * click. Every `execute`-tagged instance awaits this in its own main() and
+ * then auto-runs its own query too, so once the dataset a reader's queries
+ * depend on is actually there, they don't have to click Run in every
+ * remaining `execute` panel by hand. A `data-<label>` block loads its
+ * dataset eagerly on boot regardless of the `execute` class - only whether
+ * *its own* query auto-runs and shows results is gated on `execute`.
+ * Instances without the `execute` class never auto-run and never announce -
+ * they always wait for the reader's own Run click.
  */
-let announceFirstQueryRan;
-const firstQueryRan = new Promise((resolve) => {
-  announceFirstQueryRan = resolve;
+let announceAutoExecuteReady;
+const autoExecuteReady = new Promise((resolve) => {
+  announceAutoExecuteReady = resolve;
 });
 /** Lock the session read-only after data load when ?readonly=1 */
 const useReadOnly = new URLSearchParams(window.location.search).get("readonly") === "1";
@@ -152,6 +158,14 @@ const EMBED_STYLES = `
      just for the id-specificity reason above: Monaco renders its own theme
      via classes of its own, at a specificity this reset must not gamble
      against, so it's carved out of the selector entirely rather than raced.
+   - .erd-svg (and everything inside it) is excluded for a different reason:
+     the ERD's <rect> nodes are sized via plain width/height SVG attributes,
+     not CSS, and "all: revert" computes those CSS properties to 0 (rather
+     than falling back to the attribute) on at least Chromium, collapsing
+     every table box to a zero-size rect with only its text left visible.
+     Carving the whole SVG out of the reset - rather than re-declaring
+     width/height afterwards - keeps it immune to the same trap for any
+     future geometry attribute (x/y/r/cx/cy/...) added in here.
    - No !important here (or anywhere in this stylesheet): several features
      set inline styles via JS - the resizable editor pane's flex-basis, the
      boot splash's display:none toggle, the ERD's zoom transform - and an
@@ -162,7 +176,7 @@ const EMBED_STYLES = `
      like the tr:nth-child(even) td case above, while staying safely below
      this file's own (already more specific) component rules further down. */
 .query-studio,
-.query-studio *:not(.editor-pane):not(.editor-pane *),
+.query-studio *:not(.editor-pane):not(.editor-pane *):not(.erd-svg):not(.erd-svg *),
 #app-shell,
 .pglite-splash,
 .pglite-splash *,
@@ -305,6 +319,7 @@ const EMBED_STYLES = `
   flex-direction: column;
   height: 380px;
   min-height: 200px;
+  padding-top: 15px;
   overflow: hidden;
   resize: vertical;
   border: 1px solid var(--pglite-border);
@@ -312,9 +327,6 @@ const EMBED_STYLES = `
 }
 .query-studio + .query-studio {
   border-top: 4px solid var(--pglite-bg);
-}
-.query-studio .pglite-loading-overlay {
-  position: absolute;
 }
 .query-studio .toast {
   position: absolute;
@@ -658,6 +670,21 @@ const EMBED_STYLES = `
 :is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .pglite-loading-overlay[hidden] {
   display: none;
 }
+/* A .pglite-loading-overlay living inside a .query-studio widget (the
+   db-loading overlay, and the confirm/prompt dialog overlay when mounted
+   per-instance - see DIALOG_CONTAINER) should only cover that widget's own
+   box, not the whole host page; .query-studio is already position:relative,
+   giving this an absolute-positioned containing block. This can't be written
+   as the more obvious ".query-studio .pglite-loading-overlay" rule - the :is(...)
+   rule above always wins that fight regardless of source order, because
+   :is()'s specificity is that of its single most specific argument (here
+   #app-shell, an id) applied everywhere the :is() is used, even where the
+   actual match came through the plain .query-studio branch. Repeating the
+   same :is(...) as a compound with .query-studio matches the identical
+   element but outweighs it (id + 2 classes vs. id + 1 class). */
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay).query-studio .pglite-loading-overlay {
+  position: absolute;
+}
 :is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .pglite-loading-dialog {
   display: flex;
   align-items: center;
@@ -764,6 +791,15 @@ const EMBED_STYLES = `
   background: var(--pglite-panel);
   color: var(--pglite-text);
   box-shadow: 0 0 0 1px var(--pglite-border);
+}
+/* Embed widgets hide the History tab (no saved-queries chrome to browse back
+   into here) - kept in the DOM rather than removed, since core.js's
+   setResultsView() references el.viewHistory unconditionally. Needs the same
+   :is(...) id-specificity boost as every other component rule above, or the
+   universal "all: revert" reset (whose :not()-heavy selector out-specifies a
+   plain .query-studio-prefixed rule) wins and the button stays visible. */
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) [data-role="btn-view-history"] {
+  display: none;
 }
 
 /* Query history */
@@ -1137,13 +1173,17 @@ const QUERY_STUDIO_TEMPLATE = `
  * of these at once and ids must be unique per document.
  * @param {HTMLElement} root
  * @param {string} instanceId - Unique per instance; suffixes storage keys (query history, shared-DB id) so instances never bleed into each other.
- * @param {{ initialSql?: string, datasetLabel?: string, autoCascade?: boolean }} [options] - initialSql
+ * @param {{ initialSql?: string, datasetLabel?: string, autoExecute?: boolean }} [options] - initialSql
  *   seeds the editor (and overrides the `?sql=` URL param); datasetLabel names a dataset to load as
- *   if `?data=` had been set for this instance alone, and causes it to boot its database and run its
- *   query immediately rather than waiting for the reader's first Run; autoCascade opts this instance
- *   into running its own query automatically once any other autoCascade instance on the page runs
- *   its first query (see firstQueryRan) - all three are set for studios auto-built from a
- *   `pre.websql` code block (see convertWebsqlCodeBlocks / datasetLabelFromClassList).
+ *   if `?data=` had been set for this instance alone, and is loaded eagerly on boot regardless of
+ *   autoExecute (see main()) - it's presumably the panel responsible for loading the page's shared
+ *   dataset, and other panels need it whether or not they run their own query automatically.
+ *   autoExecute (set when the source `pre.websql` block carries an `execute` class - see
+ *   hasExecuteClass) instead controls only whether *this* panel's own query runs and shows results
+ *   without waiting for the reader's first Run: if it also has a datasetLabel it runs as soon as that
+ *   dataset finishes loading, otherwise it waits and runs once any other autoExecute instance on the
+ *   page becomes ready first (see autoExecuteReady). Instances without autoExecute always wait for
+ *   the reader's own Run click.
  */
 function createQueryStudio(root, instanceId, options = {}) {
   root.classList.add("query-studio");
@@ -1302,6 +1342,8 @@ select now() as server_time, version() as postgres_version;`;
   const HAS_SAVED_QUERIES = false;
   const THEME_ATTR = "data-pglite-theme";
   const CSS_PREFIX = "pglite-";
+  /** Styled confirm/prompt dialogs mount inside this widget's own box (not document.body), so they only cover/blur this instance rather than the whole host page. `.query-studio` is already position:relative and the shared `.query-studio .pglite-loading-overlay { position: absolute }` rule then confines the overlay to it. */
+  const DIALOG_CONTAINER = root;
 
   function setStatus(text) {
   if (el.statusText) el.statusText.textContent = text;
@@ -1381,7 +1423,7 @@ function createAppDialogShell(title) {
   dialog.innerHTML = `<div class="${CSS_PREFIX}app-dialog-header ${CSS_PREFIX}loading-dialog-title">${escapeHtml(title)}</div>`;
 
   overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
+  DIALOG_CONTAINER.appendChild(overlay);
   return { overlay, dialog };
 }
 
@@ -1838,7 +1880,7 @@ async function runQuery() {
     setStatus("Query failed");
   } finally {
     setBusy(false);
-    if (options.autoCascade) announceFirstQueryRan();
+    if (options.autoExecute) announceAutoExecuteReady();
   }
 }
 
@@ -1857,9 +1899,16 @@ async function main() {
       loadResultFromBlog(resultLabel);
     }
     if (options.datasetLabel) {
-      await userRunQuery();
-    } else if (options.autoCascade) {
-      firstQueryRan.then(() => {
+      // Load the shared dataset eagerly on boot, whether or not this panel's
+      // own query auto-executes - other panels on the page need it either way.
+      const booted = ensureDeferredDbBooted();
+      booted.then(() => announceAutoExecuteReady());
+      if (options.autoExecute) {
+        await booted;
+        if (!hasRunOnce) await userRunQuery();
+      }
+    } else if (options.autoExecute) {
+      autoExecuteReady.then(() => {
         if (!hasRunOnce) userRunQuery();
       });
     }
@@ -3798,16 +3847,13 @@ function initResizer() {
   }
 
   /**
-   * Updates the `data` URL parameter to reflect the dataset currently loaded,
-   * leaving every other URL parameter untouched, so copying the address bar
-   * gives a direct link back to this dataset. Uses replaceState so loading
-   * datasets one after another doesn't pile up browser history entries.
+   * No-op in the embed build: unlike app.js (a whole page dedicated to one
+   * query session), an embed widget lives on a host blog page that may carry
+   * its own URL/history expectations - and a page can hold several
+   * independent widgets, each of which would otherwise fight over the same
+   * `data` param. So loading a dataset here never touches the address bar.
    */
-  function setDataUrlParam(label) {
-    const url = new URL(window.location.href);
-    url.searchParams.set("data", label);
-    window.history.replaceState(window.history.state, "", url);
-  }
+  function setDataUrlParam(_label) {}
 
   /**
    * Builds a shareable URL for the current page setup: same path, with `sql`
@@ -4235,7 +4281,7 @@ worker({
    */
   let deferredDbBootPromise = null;
 
-  /** Whether this instance has ever run a query (auto or manual) - guards against the autoCascade listener in main() re-running a query the reader already ran themselves. */
+  /** Whether this instance has ever run a query (auto or manual) - guards against the autoExecute cascade listener in main() re-running a query the reader already ran themselves. */
   let hasRunOnce = false;
 
   /** Tracks the most recently kicked-off refreshTables() call; unused directly in the embed build today but kept in scope since the shared runQuery() assigns it. */
@@ -4340,12 +4386,24 @@ function datasetLabelFromClassList(classList) {
 }
 
 /**
+ * An `execute` class on the fenced code block - e.g. ```{.sql .websql
+ * .execute}``` becoming `<pre class="... execute">` - opts that block's
+ * query-studio into running its query automatically (see options.autoExecute
+ * on createQueryStudio) instead of waiting for the reader's own Run click.
+ * Without it, the block always waits for a manual Run.
+ */
+function hasExecuteClass(classList) {
+  return classList.contains("execute");
+}
+
+/**
  * Replaces every `<pre class="... websql">` code block - the shape pandoc
  * produces for a ```{.sql .websql}```-tagged fenced code block in a blog
  * post - with an empty `.query-studio` container carrying that block's own
- * SQL text in `data-initial-sql` (and, if a `data-<label>` class was present,
- * the dataset label in `data-dataset-label`), ready for the bootstrap loop
- * below to turn into a live widget seeded with exactly that query.
+ * SQL text in `data-initial-sql` (and, if present, the dataset label in
+ * `data-dataset-label` and the auto-execute flag in `data-auto-execute`),
+ * ready for the bootstrap loop below to turn into a live widget seeded with
+ * exactly that query.
  * @returns {number} How many blocks were converted.
  */
 function convertWebsqlCodeBlocks() {
@@ -4353,9 +4411,11 @@ function convertWebsqlCodeBlocks() {
   blocks.forEach((pre) => {
     const sql = pre.textContent.replace(/\u00a0/g, " ").trim();
     const datasetLabel = datasetLabelFromClassList(pre.classList);
+    const autoExecute = hasExecuteClass(pre.classList);
     const root = document.createElement("div");
     root.dataset.initialSql = sql;
     if (datasetLabel) root.dataset.datasetLabel = datasetLabel;
+    if (autoExecute) root.dataset.autoExecute = "1";
     const host = pre.closest(".sourceCode") || pre;
     host.replaceWith(root);
   });
@@ -4379,17 +4439,18 @@ const studioRoots = document.querySelectorAll(".query-studio, [data-initial-sql]
 window.pgliteStudios = Array.from(studioRoots).map((root, index) => {
   const initialSql = root.dataset.initialSql;
   const datasetLabel = root.dataset.datasetLabel;
-  // Only code-block-derived roots (see convertWebsqlCodeBlocks) join the
-  // first-query-ran cascade; a hand-placed `.query-studio` container has no
-  // `data-initial-sql` attribute even when empty, so presence (not truthiness)
-  // is what distinguishes the two origins.
-  const autoCascade = "initialSql" in root.dataset;
+  // Only a block whose `pre.websql` carried an `execute` class (see
+  // hasExecuteClass) auto-runs/joins the first-query-ran cascade; every
+  // other block - including hand-placed `.query-studio` containers - always
+  // waits for the reader's own Run click.
+  const autoExecute = "autoExecute" in root.dataset;
   delete root.dataset.initialSql;
   delete root.dataset.datasetLabel;
+  delete root.dataset.autoExecute;
   return createQueryStudio(root, `studio-${index}`, {
     ...(initialSql ? { initialSql } : {}),
     ...(datasetLabel ? { datasetLabel } : {}),
-    ...(autoCascade ? { autoCascade } : {}),
+    ...(autoExecute ? { autoExecute } : {}),
   });
 });
 // External code that wants to auto-load a default database on boot must
