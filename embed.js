@@ -1273,6 +1273,8 @@ select now() as server_time, version() as postgres_version;`;
   let currentFileLabel = DEFAULT_DB_LABEL;
   let currentResultSets = [];
   let currentResultSetsSql = "";
+  /** @type {Array<{severity: string, message: string}>} NOTICE/WARNING/INFO messages raised by the most recent run (e.g. RAISE inside a PL/pgSQL block). */
+  let currentNotices = [];
   /**
    * True once the current in-browser database has changes (edits, imports)
    * that only exist in memory/IndexedDB. Drives the beforeunload warning so a
@@ -1863,20 +1865,22 @@ async function runQuery() {
   setBusy(true);
   setStatus("Running…");
   const startedAt = performance.now();
+  const notices = [];
+  const onNotice = (notice) => notices.push({ severity: notice.severity || "NOTICE", message: notice.message || "" });
   try {
     const isMeta = isMetaCommand(sql);
-    const results = isMeta ? await runMetaCommand(sql) : await pg.exec(sql);
+    const results = isMeta ? await runMetaCommand(sql) : await pg.exec(sql, { onNotice });
     if (!isMeta && !sqlLooksReadOnly(sql)) markUnsavedChanges();
     const elapsed = Math.round(performance.now() - startedAt);
     addQueryHistoryEntry({ sql, ok: true, elapsedMs: elapsed });
     currentResultSetsSql = sql;
-    renderResults(results, elapsed);
+    renderResults(results, elapsed, notices);
     setStatus("Ready");
     pendingTablesRefresh = refreshTables();
   } catch (err) {
     console.error(err);
     addQueryHistoryEntry({ sql, ok: false, error: err.message || String(err) });
-    renderError(err);
+    renderError(err, notices);
     setStatus("Query failed");
   } finally {
     setBusy(false);
@@ -2155,9 +2159,24 @@ function clearQueryHistory() {
 
 // ---- Results table ----------------------------------------------------------
 
+/** Renders the NOTICE/WARNING/INFO messages a PL/pgSQL RAISE (or similar) produced during the run, e.g. as a `<div>` above the result blocks/error box. */
+function buildNoticesHtml(notices) {
+  if (!notices || notices.length === 0) return "";
+  const lines = notices
+    .map((n) => {
+      const severity = String(n.severity || "NOTICE").toLowerCase();
+      return `<div class="notice-line notice-severity-${escapeHtml(severity)}"><span class="notice-severity">${escapeHtml(
+        n.severity || "NOTICE"
+      )}</span><span class="notice-message">${escapeHtml(n.message || "")}</span></div>`;
+    })
+    .join("");
+  return `<div class="result-notices">${lines}</div>`;
+}
+
 function clearResults(message) {
   currentResultSets = [];
   currentResultSetsSql = "";
+  currentNotices = [];
   resultPageByIdx = new Map();
   lastResultsHtml = `<div class="empty-hint">${escapeHtml(message)}</div>`;
   lastResultsMeta = "";
@@ -2165,11 +2184,12 @@ function clearResults(message) {
   setResultsView("results");
 }
 
-function renderError(err) {
+function renderError(err, notices) {
   currentResultSets = [];
   currentResultSetsSql = "";
+  currentNotices = notices || [];
   resultPageByIdx = new Map();
-  lastResultsHtml = `<div class="error-box">${escapeHtml(err.message || String(err))}</div>`;
+  lastResultsHtml = `${buildNoticesHtml(currentNotices)}<div class="error-box">${escapeHtml(err.message || String(err))}</div>`;
   lastResultsMeta = "";
   lastResultsClassName = "results-body has-error";
   setResultsView("results");
@@ -2217,8 +2237,9 @@ function renderPager(idx, page, totalPages, totalRows, rangeStart, rangeEnd) {
   </div>`;
 }
 
-function renderResults(results, elapsedMs) {
+function renderResults(results, elapsedMs, notices) {
   currentResultSets = results || [];
+  currentNotices = notices || [];
   resultPageByIdx = new Map();
 
   if (!results || results.length === 0) {
@@ -2226,7 +2247,8 @@ function renderResults(results, elapsedMs) {
     return;
   }
 
-  lastResultsHtml = currentResultSets.map((res, i) => buildResultBlockHtml(res, i)).join("");
+  const resultsHtml = currentResultSets.map((res, i) => buildResultBlockHtml(res, i)).join("");
+  lastResultsHtml = `${buildNoticesHtml(currentNotices)}${resultsHtml}`;
   const totalRows = results.reduce((sum, r) => sum + (r.rows ? r.rows.length : 0), 0);
   lastResultsMeta = `${totalRows} row(s) · ${elapsedMs} ms`;
   lastResultsClassName = "results-body";
@@ -2241,7 +2263,8 @@ function goToResultPage(idx, dir) {
   const next = dir === "next" ? current + 1 : current - 1;
   if (next < 0 || next >= totalPages) return;
   resultPageByIdx.set(idx, next);
-  lastResultsHtml = currentResultSets.map((res, i) => buildResultBlockHtml(res, i)).join("");
+  const resultsHtml = currentResultSets.map((res, i) => buildResultBlockHtml(res, i)).join("");
+  lastResultsHtml = `${buildNoticesHtml(currentNotices)}${resultsHtml}`;
   if (resultsViewMode === "results") {
     el.resultsBody.innerHTML = lastResultsHtml;
     markOverflowingCells();

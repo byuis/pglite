@@ -1245,6 +1245,8 @@ select now() as server_time, version() as postgres_version;`;
   let currentFileLabel = DEFAULT_DB_LABEL;
   let currentResultSets = [];
   let currentResultSetsSql = "";
+  /** @type {Array<{severity: string, message: string}>} NOTICE/WARNING/INFO messages raised by the most recent run (e.g. RAISE inside a PL/pgSQL block). */
+  let currentNotices = [];
   /**
    * True once the current in-browser database has changes (edits, imports)
    * that only exist in memory/IndexedDB. Drives the beforeunload warning so a

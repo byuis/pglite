@@ -749,6 +749,38 @@ table.result-table tbody tr:hover {
   font-style: italic;
 }
 
+.result-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+.notice-line {
+  display: flex;
+  gap: 8px;
+}
+
+.notice-severity {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.notice-severity-warning .notice-severity,
+.notice-severity-warning .notice-message {
+  color: var(--danger-text);
+}
+
+.notice-message {
+  color: var(--text);
+}
+
 .error-box {
   background: var(--danger-tint);
   border: 1px solid var(--danger-border);

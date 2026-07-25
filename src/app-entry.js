@@ -187,6 +187,8 @@ let monacoRef = null;
 let currentFileLabel = DEFAULT_DB_LABEL;
 let currentResultSets = [];
 let currentResultSetsSql = "";
+/** @type {Array<{severity: string, message: string}>} NOTICE/WARNING/INFO messages raised by the most recent run (e.g. RAISE inside a PL/pgSQL block). */
+let currentNotices = [];
 let savedQueriesCache = [];
 /**
  * True once the current in-browser database has changes (edits, imports,
