@@ -114,7 +114,7 @@ const EMBED_STYLES = `
   --pglite-panel: #22252c;
   --pglite-border: #34373f;
   --pglite-text: #e7e9ee;
-  --pglite-text-muted: #444;
+  --pglite-text-muted: #8b95a8;
   --pglite-accent: #6c8cff;
   --pglite-accent-hover: #839dff;
   --pglite-danger: #ff6b6b;
@@ -582,6 +582,42 @@ const EMBED_STYLES = `
 :is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .cell-null {
   color: var(--pglite-text-muted);
   font-style: italic;
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .result-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px;
+  background: var(--pglite-bg);
+  border-bottom: 1px solid var(--pglite-border);
+  font-family: var(--pglite-mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-header {
+  color: var(--pglite-text-muted);
+  font-family: var(--pglite-sans);
+  font-size: 13px;
+  padding: 6px 14px;
+  margin: -8px -14px 6px -14px;
+  background: var(--pglite-panel);
+  border-bottom: 1px solid var(--pglite-border);
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-line {
+  display: flex;
+  gap: 8px;
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-severity {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--pglite-text-muted);
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-severity-warning .notice-severity,
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-severity-warning .notice-message {
+  color: var(--pglite-danger-text);
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-message {
+  color: var(--pglite-text);
 }
 :is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .error-box {
   background: var(--pglite-danger-tint);
@@ -1409,6 +1445,15 @@ select now() as server_time, version() as postgres_version;`;
   async function loadPGlite() {
     const mod = await import(PGLITE_URL);
     return mod.PGlite;
+  }
+
+  /**
+   * Loads the wire-protocol helpers (query serializer + result parser) the main PGlite module
+   * also exports, for execCapturingNotices() - see that function for why it needs them.
+   */
+  async function loadPGliteProtocolHelpers() {
+    const mod = await import(PGLITE_URL);
+    return { protocol: mod.protocol, parse: mod.parse };
   }
 
   /**

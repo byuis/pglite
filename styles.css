@@ -35,7 +35,7 @@
   --panel: #22252c;
   --border: #34373f;
   --text: #e7e9ee;
-  --text-muted: #444;
+  --text-muted: #8b95a8;
   --accent: #6c8cff;
   --accent-hover: #839dff;
   --danger: #ff6b6b;
@@ -759,6 +759,16 @@ table.result-table tbody tr:hover {
   font-family: var(--mono);
   font-size: 12.5px;
   white-space: pre-wrap;
+}
+
+.notice-header {
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 6px 14px;
+  margin: -8px -14px 6px -14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
 }
 
 .notice-line {

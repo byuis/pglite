@@ -456,6 +456,15 @@ async function loadPGlite() {
 }
 
 /**
+ * Loads the wire-protocol helpers (query serializer + result parser) the main PGlite module
+ * also exports, for execCapturingNotices() - see that function for why it needs them.
+ */
+async function loadPGliteProtocolHelpers() {
+  const mod = await import(PGLITE_URL);
+  return { protocol: mod.protocol, parse: mod.parse };
+}
+
+/**
  * Dynamically loads the PGliteWorker client from the CDN.
  */
 async function loadPGliteWorker() {

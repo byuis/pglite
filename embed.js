@@ -118,7 +118,7 @@ const EMBED_STYLES = `
   --pglite-panel: #22252c;
   --pglite-border: #34373f;
   --pglite-text: #e7e9ee;
-  --pglite-text-muted: #444;
+  --pglite-text-muted: #8b95a8;
   --pglite-accent: #6c8cff;
   --pglite-accent-hover: #839dff;
   --pglite-danger: #ff6b6b;
@@ -586,6 +586,42 @@ const EMBED_STYLES = `
 :is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .cell-null {
   color: var(--pglite-text-muted);
   font-style: italic;
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .result-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px;
+  background: var(--pglite-bg);
+  border-bottom: 1px solid var(--pglite-border);
+  font-family: var(--pglite-mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-header {
+  color: var(--pglite-text-muted);
+  font-family: var(--pglite-sans);
+  font-size: 13px;
+  padding: 6px 14px;
+  margin: -8px -14px 6px -14px;
+  background: var(--pglite-panel);
+  border-bottom: 1px solid var(--pglite-border);
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-line {
+  display: flex;
+  gap: 8px;
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-severity {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--pglite-text-muted);
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-severity-warning .notice-severity,
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-severity-warning .notice-message {
+  color: var(--pglite-danger-text);
+}
+:is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .notice-message {
+  color: var(--pglite-text);
 }
 :is(.query-studio, #app-shell, .pglite-splash, .pglite-app-dialog-overlay) .error-box {
   background: var(--pglite-danger-tint);
@@ -1855,6 +1891,44 @@ async function userRunQuery() {
   runQuery();
 }
 
+/**
+ * Runs `sql` the same way pg.exec() would (same simple-query protocol message, same
+ * parseResults() row/field parsing, same pg.parsers), but also surfaces NOTICE/WARNING/INFO
+ * messages raised during execution (e.g. RAISE inside a PL/pgSQL block).
+ *
+ * pg.exec()'s own `onNotice` option can't be used for this: when `pg` is a PGliteWorker
+ * (shared/multi-instance mode, see DB lifecycle docs), the worker client's execProtocol/
+ * execProtocolStream overrides only forward the raw message bytes across the worker's
+ * postMessage boundary, silently dropping any options object - including a live onNotice
+ * callback, which couldn't cross that boundary anyway (functions aren't cloneable). What
+ * *does* survive the round trip is execProtocol()'s returned `messages` array, which includes
+ * notice entries as plain data - so on success, notices are read back out of that array
+ * instead of relying on a callback. onNotice is still passed through too, since it fires
+ * live for a direct (non-worker) `pg` and, unlike the array, survives to the moment a later
+ * statement in the same block throws (e.g. RAISE NOTICE followed by RAISE EXCEPTION) - a case
+ * where the thrown error doesn't carry the messages seen before it. In worker mode that
+ * before-the-error case can't be recovered (the worker's RPC error path collapses to just
+ * `err.message`), so `err.notices` is empty there; this only affects notices raised earlier in
+ * a block that then fails.
+ */
+async function execCapturingNotices(sql) {
+  const { protocol, parse } = await loadPGliteProtocolHelpers();
+  const liveNotices = [];
+  const onNotice = (notice) => liveNotices.push({ severity: notice.severity || "NOTICE", message: notice.message || "" });
+  try {
+    const { messages } = await pg.runExclusive(() => pg.execProtocol(protocol.serialize.query(sql), { onNotice }));
+    const notices = liveNotices.length
+      ? liveNotices
+      : messages
+          .filter((m) => m.name === "notice")
+          .map((m) => ({ severity: m.severity || "NOTICE", message: m.message || "" }));
+    return { results: parse.parseResults(messages, pg.parsers, {}), notices };
+  } catch (err) {
+    err.notices = liveNotices;
+    throw err;
+  }
+}
+
 async function runQuery() {
   if (!pg) return;
   const sql = editor.getValue().trim();
@@ -1865,11 +1939,9 @@ async function runQuery() {
   setBusy(true);
   setStatus("Running…");
   const startedAt = performance.now();
-  const notices = [];
-  const onNotice = (notice) => notices.push({ severity: notice.severity || "NOTICE", message: notice.message || "" });
   try {
     const isMeta = isMetaCommand(sql);
-    const results = isMeta ? await runMetaCommand(sql) : await pg.exec(sql, { onNotice });
+    const { results, notices } = isMeta ? { results: await runMetaCommand(sql), notices: [] } : await execCapturingNotices(sql);
     if (!isMeta && !sqlLooksReadOnly(sql)) markUnsavedChanges();
     const elapsed = Math.round(performance.now() - startedAt);
     addQueryHistoryEntry({ sql, ok: true, elapsedMs: elapsed });
@@ -1880,7 +1952,7 @@ async function runQuery() {
   } catch (err) {
     console.error(err);
     addQueryHistoryEntry({ sql, ok: false, error: err.message || String(err) });
-    renderError(err, notices);
+    renderError(err, err.notices || []);
     setStatus("Query failed");
   } finally {
     setBusy(false);
@@ -2162,15 +2234,17 @@ function clearQueryHistory() {
 /** Renders the NOTICE/WARNING/INFO messages a PL/pgSQL RAISE (or similar) produced during the run, e.g. as a `<div>` above the result blocks/error box. */
 function buildNoticesHtml(notices) {
   if (!notices || notices.length === 0) return "";
+  const header = `<div class="notice-header">Output from a PL/pgSQL script</div>`;
   const lines = notices
     .map((n) => {
-      const severity = String(n.severity || "NOTICE").toLowerCase();
-      return `<div class="notice-line notice-severity-${escapeHtml(severity)}"><span class="notice-severity">${escapeHtml(
-        n.severity || "NOTICE"
-      )}</span><span class="notice-message">${escapeHtml(n.message || "")}</span></div>`;
+      const severity = String(n.severity || "NOTICE").toUpperCase();
+      const severityHtml = severity === "NOTICE" ? "" : `<span class="notice-severity">${escapeHtml(severity)}</span>`;
+      return `<div class="notice-line notice-severity-${escapeHtml(severity.toLowerCase())}">${severityHtml}<span class="notice-message">${escapeHtml(
+        n.message || ""
+      )}</span></div>`;
     })
     .join("");
-  return `<div class="result-notices">${lines}</div>`;
+  return `<div class="result-notices">${header}${lines}</div>`;
 }
 
 function clearResults(message) {
@@ -3912,6 +3986,15 @@ function initResizer() {
   async function loadPGlite() {
     const mod = await import(PGLITE_URL);
     return mod.PGlite;
+  }
+
+  /**
+   * Loads the wire-protocol helpers (query serializer + result parser) the main PGlite module
+   * also exports, for execCapturingNotices() - see that function for why it needs them.
+   */
+  async function loadPGliteProtocolHelpers() {
+    const mod = await import(PGLITE_URL);
+    return { protocol: mod.protocol, parse: mod.parse };
   }
 
   /**
